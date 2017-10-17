@@ -4,7 +4,7 @@
 <html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en">
 <head>
 <title>Javaclass文件结构说明</title>
-<!-- 2017-10-17 周二 17:16 -->
+<!-- 2017-10-17 周二 17:26 -->
 <meta  http-equiv="Content-Type" content="text/html;charset=utf-8" />
 <meta  name="generator" content="Org-mode" />
 <meta  name="author" content="王月阳" />
@@ -200,7 +200,7 @@ Java语言的运行，是将Java文件编译成class文件，然后加载到虚�
 <p>
 这是一个常见的赋值表达式，含义是声明一个变量a，将2+3的值赋值给变量a。其中2+3是生活中常见的数学表达式，我们称这种形式的表达式为中缀表达式。而经过javac编译后
 将形成后缀表达式的形式：2 3 + 的形式。Java的解释执行器在读入该行代码的时候，会将2从内存加载到栈里面；然后读取3加载到栈里面，然后读取到+运算符，就会将+运算符需要
-的两个参数，也就是栈里面的2和3弹出来，然后送给CPU做加法运算。CPU运算完成后，将运算结果4压入栈中。然后通过istore命令将4的值存到变量a指向的内存地址中。
+的两个参数，也就是栈里面的2和3弹出来，然后送给CPU做加法运算。CPU运算完成后，将运算结果5压入栈中。然后通过istore命令将4的值存到变量a指向的内存地址中。
 关于前缀表达式，中缀表达和后缀表达式三种表达式求值的运算逻辑可参考<a href="http://blog.csdn.net/antineutrino/article/details/6763722/">csdn博客</a> 。
 </p>
 </div>
@@ -348,7 +348,7 @@ this指针，就不会占用了，locals将变成4，arg_size变成0。读者可
 </div>
 <div id="postamble" class="status">
 <p class="author">Author: 王月阳</p>
-<p class="date">Created: 2017-10-17 周二 17:16</p>
+<p class="date">Created: 2017-10-17 周二 17:26</p>
 <p class="creator"><a href="http://www.gnu.org/software/emacs/">Emacs</a> 24.5.1 (<a href="http://orgmode.org">Org</a> mode 8.2.10)</p>
 <p class="validation"><a href="http://validator.w3.org/check?uri=referer">Validate</a></p>
 </div>
