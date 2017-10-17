@@ -1,0 +1,747 @@
+#+TITLE:资源争用模型(泛多线程编程)
+#+AUTHOR:王月阳
+#+EMAIL:645583145@qq.com
+#+HTML_HEAD: <link rel="stylesheet" type="text/css" href="./css/style.css" />
+#+OPTIONS:^:{}
+#+KEYWORDS:Java concurrenty 多线程 资源争用 Java内存模型 AQS Java锁 MVCC
+#+DESCRIPTION:讲解资源争用模型，如何解决资源争用过程中的资源安全问题。Java又是如何实现资源争用的。
+
+ 
+* 线程的演进
+** 从单道程序到多道程序，从多进程到多线程
+
+    计算机最开始的时候的运行模式是从存储器（存储器大概发展过程：纸带-磁带-软盘-光盘-机械硬盘-ssd）上读取程序，然后将二进
+制命令输送到cpu执行。所以初期的单道程序就是读取一个程序，cpu执行；读取一个程序，cpu执行。相对来说，cpu的运算速度要比
+IO速度快很多，当任务需要执行io的时候，cpu就会等待。所以cpu呈现出来的状态就是三天打渔两天晒网的状态。这对于cpu来说是一种浪费。为了解决这个问题，前辈们
+想出来这样一个方法，一次将多个程序读入到内存中，当一个程序执行到io的时候，就会切换到另一个程序执行。有可能执行的程序不需
+要执行io，这样就会等待当前程序执行完成再执行下一个程序。
+
+    随着计算机的发展，操作系统开始出现，操作系统的主要功能是通过驱动管理不同的硬件，为用户的程序提供一致的接口。进程的出
+现也为管理计算机资源提供了很好的模型。进程模型是对程序执行所需要的cpu，内存，文件，设备等资源一种整合抽象。因为操作系统
+是以微内核+服务的形式提供功能的。所以就要区分进程是内核进程还是用户进程。内核进程要比用户进程有更全的功能，比如操作io，
+设备，文件等。所以实际上，用户程序要发生io的时候，会通过系统调用将内核进程切换到cpu，使用内核进程完成io功能。系统调用是
+通过一种基础的中断方式实现，具体的不深究。
+
+    当一个用户进程发生io后，进程会等待io完成。这个时候如果还占用cpu就会导致cpu浪费，如同单道程序一样。所以这个时候应该将
+等待io的进程切换出去，将另一个进程切换到cpu中继续执行。这就是进程切换。如前文所说的，进程持有文件，设备等一系列的资源。
+在进程发生切换的时候，要将当前进程的这些资源切换到内存甚至切换到硬盘中；新的进程切换进来的时候，也要把对应的资源切换进内
+存和cpu中，这需要几千甚至更多的cpu运算，这其实也是对cpu资源的一种浪费。
+
+    怎么解决资源切换带来的cpu浪费呢？我们先看一下为啥要切换进程。因为cpu执行程序到io的时候，cpu被闲置了，所以要切换到其
+他进程继续使用cpu，而这个场景中是没有涉及到资源的。所以，我们真正要实现的是切换程序对cpu的控制权，而不是资源的切换。那要
+怎么办呢？如果把程序的执行单位和资源拥有者分离开，每次切换的时候只切换执行单位而不切换资源，这样会不会好很多。这也就是线
+程出现的原因。我们在启动一个程序的时候，为这个进程分配资源，文件，设备和cpu，但cpu真正调度的却是线程。线程相对进程来说，
+不会拥有那么多的资源，在线程切换的时候，只需要切换cpu现场和很少一部分的内存数据就可以完成了。这比切换线程要减少很多cpu开
+销。
+
+    一个线程只包含线程ID，当前指令指针（PC），寄存器集合和线程堆栈。这些数据比起进程来要小很多很多。所以切换起来比进程切
+换方便很多。所以一台机器可以支撑几千几万的线程并发，却只能支撑几百的进程并发。
+
+    从上述过程可以看出，cpu执行和调度的基本单位从程序演进到进程，又演进到线程。其目的都是为了弥补io和cpu计算之间的速度差
+距，实现对cpu的有效利用。
+
+* 线程的生命周期
+** 线程状态
+    在jvm中的定义中，线程的状态一共有6中，分别是NEW,RUNNABLE,BLOCKED,WAITING,TIMED_WAITING和TERMINATED。
+    - NEW：线程创建还没有开始执行的状态。在执行start方法转到RUNNABLE状态。
+    - RUNNABLE：标明线程已经在JVM中执行，但可能等待操作系统为其分配资源，比如cpu，才能真正执行
+    - BLOCKED：标明线程处于阻塞状态，等待获取锁
+    - WAITING：标明线程处于等待状态，等待其他线程将其唤醒。BLOCKED和WAITING的区别是BLOCKED是被动阻塞，等待系统唤醒进入
+      RUNNABLE状态，而WAITING是线程主动进入等待状态，由用户线程负责唤醒。jvm为了管理方便才区分了这两种状态
+    - TIMED_WAITING：带超时时间的等待状态
+    - TERMINATED：线程终止状态
+** 线程状态之间的转换
+   [NEW --start()--> RUNNABLE
+   [RUNNABLE --Thread.sleep()--> WAITING]\\
+   [RUNNABLE --Thread.sleep()--> WAITING]\\
+   [RUNNABLE --Thread.sleep(long)--> TIMED_WAITING]\\
+   [RUNNABLE --Thread.sleep(long)--> TIMED_WAITING]\\
+   [RUNNABLE --Thread.sleep(long)--> TIMED_WAITING]\\
+   [RUNNABLE --synchronized--> BLOCKED]\\
+   [RUNNABLE --IO--> TIMED_WAITING,WAITING,BLOCKED]\\
+   [TIME_WAITTING,WAITING,BLOCKED --OVERTIME,interrupt(),IOSignal,HoldLock--> RUNNABLE]\\
+   [RUNNABLE --run()--> TERMINATED]
+
+* 多线程适用场景
+    - 通过在发生IO的时候切换到其他线程执行而充分利用cpu性能
+    - 充分利用多核cpu性能，实现计算并行化
+    - 简化业务模型，分离业务关注点
+
+* 资源争用模型
+** 资源争用模型的含义
+    资源争用，顾名思义就是不同的使用者对共享的资源进行原子性使用。下面我们从日常生活中举个例子来说明一下什么是资源争用。
+** 例子
+    举个常见的高速路出口的例子。在这个例子中，不同的车辆就是不同的使用者，高速路出口就是共享的资源。当多辆车同时到达高速
+    路出口的时候，一个出口同一个时间点只能允许一辆车通行，这可怎么办呢？现实生活中是什么样的呢，所有车辆排队依次通过出口。
+    当车流量特别大的时候，排队的车辆就会很多，又怎么办，增开高速路出口，把车辆分散到不同的出口。所以在本例中，保证业务正
+    常进行的两个点分别是排队和增加资源，当然是基于操作是原子的前提下。
+
+    再举个饭店里顾客点菜厨师炒菜的例子，在这个例子中，厨师就是共享的资源，顾客就是资源争用者。那么正常生活中，是怎么保证
+    菜被正常的做出来的呢？客户A点了一个菜之后，厨师开始炒菜；然后另一个人B又点了10个菜，这10个菜都由服务员通知厨师炒了。然后厨师
+    就会按照服务员给的菜单的顺序一个一个炒菜。在本例中，我们默认了一个前提，就是炒菜是一个一个炒的，这是一个原子的操
+    作，不可分割。不然厨师把炒这个菜的盐放到了另一个菜的锅里，就这跪了。在本例中，我们还有一个大家习以为常的点，就是厨师
+    会自动的一个一个的炒菜，厨师会人工判断先炒那个菜后炒那个菜，这是不是就相当于给业务线程排了个队呢？除去排队，还有什么
+    方法能减少争用呢？套路来了，增加资源啊。。。
+
+    所以，在资源争用模型中，要么排队，要么加资源。
+** 从争的角度解决问题（排队模型）
+*** 排队的本质就是有序
+    从上一节的例子可以看出，解决争用一个常见的方式就是让操作有序。这个模型我们可以叫它排队模型。通过各种操作的排队，实现
+    操作有序，进而实现对资源的原子操作，保证资源的安全。
+*** 排队的实现
+    那么，排队模型怎么实现呢？就说高速路出口的例子，两车司机同时想跟在一个车后面的时候，大概是通过眼神交流，协商好，谁在
+    前面谁在后面 。饭店那个例子中，做菜的先后顺序，应该是按照点菜的顺序，先来后到。这其实就是实现排队的两种方法。其一，
+    就是大家协商；其二就是操作在到达争用之前，本身就是有序的。
+    
+    对应在Java中，协商是怎么实现的呢？线程不可能像人一样有自主思维意识，知道礼让排队。那么线程能怎么判断能不能操作资源呢？
+    那么，我们可以从资源的角度来看，当资源已经被占用的时候，新来的线程是不用操作资源的，只能等待。资源没有被其他线程占用，
+    也就是空闲的时候，才能被线程操作。那么线程要获取资源的操作权限的时候，可以先判断资源状态，空闲才能使用资源，使用过程
+    说要将资源的状态设置为被占用，使用完成之后将资源状态设置为空闲。
+
+    实际使用过程中，我们不可能说为每个共享的资源去设置一个状态字段，因为这与业务本身是无关的，应该被抽象出来作为一个通用
+    的逻辑。怎么抽象呢，其实我们就需要一个状态字段，标明对应的资源是被占用还是空闲状态，这个字段可以以任何形式存在，没必
+    要放在资源对象里面。
+
+    前面说的是协商实现排队的方式。还有一种方式就是让自然争用者自带顺序，比如按先来后到，比如到达资源争用之前，每个争用者
+    分配一个序列号，按序列号使用资源。
+** 从资源的角度解决问题
+   从资源的角度来解决资源争用的问题，就是提供足够多的资源，让使用者不去争。不争的还有一种方式就是资源是可被复用的，这相
+   当于有无限多份资源，是足够多资源的一种特例。
+*** 不共享资源 New
+     不共享资源的一种实现方式是来一个争用者就创建一份新在资源给争用者使用，这样就不会跟其他争用者产生竞争关系。
+*** 资源不可变 ImmutableData
+    这是不共享的一种特例，相当于有无限多份资源，每个争用者可以自由使用。
+** 更细的粒度
+*** 共享锁与排他锁
+    对资源的使用有两种情况，一是使用会修改资源，二是使用不修改资源。对于只有不修改资源的这种使用场景，就相当于资源不可变。
+    但对于有修改资源操作的场景，就要排队了。也就是说修改操作是互斥的，修改操作和不修改操作是互斥的。所以因为怼资源操作的
+    不同，所以资源占用对应的状态也不相同，
+*** MVCC
+    MVCC是一种结合了资源与排队两个方面的方法实现的争用模型，首先，资源每个版本都一个唯一的序列号，不同版本的序列号是有顺
+    序的，争用者获取资源的操作之后，得到资源版本号，比如99；当要修改资源的时候，会带着序列号来操作，这样就实现了排队。而
+    对于不修改资源的操作来说，可以正常获取资源，没有争用。
+* Java内存模型与资源争用
+  我们前面总结的，可以用一个状态位标识资源状态：可用不可用，可写不可写，可读不可读。争用者通过这个状态值实现对资源的安全
+  操作。这个资源争用模型怎么套用到Java里面呢？
+  *所有锁的构建，都是依赖下层工具为上层提供的原子操作* ，比如，java里面的锁，依赖了c提供的互斥量，原子操作等；而c的互斥
+  量原子操作则依赖系统提供的原子操作，系统则依赖于硬件提供的原语。这种下层为上层提供的原子操作，我们可以把他们叫做原语。
+  我们在构建锁的时候，都是基于原语去构建的。比如流行的分布式锁，也是基于语言提供的原语来实现的。
+
+  在编写java代码到时候我们怎么把这套理论应用起来呢？首先我们要辨别什么是要争用的资源。然后我们分析这个资源在争用的过程中
+  分别有什么样的状态，然后再决定用什么来抽象这个资源，也就是决定用什么锁。
+** 分析被争用的资源
+   Java的内存模型主要包含两部分,一部分是主内存，也就是所有java线程共享；另一部分是java线程的本地变量，包含局部变量和共享
+   内存中的变量副本。这个模型明确的说明了，哪些是争用的资源哪些是不争用的。那么对应在java代码中，怎么区分呢？方法内的局
+   部变量定义的数据，都是非争用的；其余的类的属性，对象属性，或者传入的参数，都有可能要被多线程争用。
+
+   比如，我们常规的web编程过程中，servlet容器每接收到一个请求就会调用一个线程去处理请求。但却是调用同一个servlet对象的
+   doServie方法。所以，servlet对象的属性在web编程过程中是被当作共享资源争用的，而doService方法里定义的局部变量是每个线程
+   私有的。所以，servlet的属性是非线程安全的，需要一定的机制去保证线程安全。
+
+   业务系统中，我们怎么分析被争用的资源呢？其实是一样的，关键是分析哪些资源是共享的。比如电商系统中账户的金额，比如商品
+   的数量。这些都是会被不同业务线程争用的资源。下面我们具体分析一下，怎么利用资源争用模型保证数据安全的。
+
+*** 账户金额问题
+   在一个电商系统中，账户是会存在同一个时刻有多个操作请求的，比如用户购买商品发生账户扣款的同时也在充值，比如用户同时从
+   多个不同终端进行购买支付操作，比如用户连续支付多笔订单。在这一系列的业务场景中，我们怎么通过资源争用模型来保证账户金
+   额的正确呢？
+
+   首先我们分析账户金额为啥会不正确？假设账户原始金额为100.00元，业务线程A要为账户充值10元，业务线程B要从账户里扣除30元。
+   业务线程A先查询到账户里有100元，然后中内存中将10元加上，此时内存中的账户是110元，然后发生了线程上下文切换，线程A被挂
+   起，线程B执行，B也从数据库中读到了账户余额是100元，然后将支付的30元扣除，此时B认为账户余额应该是70元，写入到数据库中。
+   线程B执行完成，用户正常支付扣款。然后线程A切换执行，又把账户的余额设置成了110元。线程A也正常执行完成，用户充值成功。
+   可是，此时账户里是110元，但正常情况下，账户里应有100-30+10 = 80元。那么问题出在哪里呢？
+
+   可以说是线程A不知道线程B已经把账户里的钱改动过了，所以认为它持有的金额是正确的。也可以说是A的操作被B打断了，所以导致
+   了A的数据不正确。从资源争用的角度看怎么解决问题呢？排队！让线程A和B的操作依次进行，这样就保证数据安全了。怎么排队呢，
+   用一个状态值表明账户是否被占用，占用的时候是不允许其他线程操作的。这就相当于用一个互斥量来抽象资源状态，空闲状态的资
+   源才能被操作，否则线程就要等待。这是不是就是我们通常理解的锁呀。如果是单机，我们可以用java的锁来实现这个互斥量；如果
+   是分布式系统，我们可以使用redis或者zookeeper提供的原子操作实现的分布式锁来抽象资源状态，进而实现对不同线程的互斥操作。
+
+   另一种排队方案是什么呢？上面的方案是通过锁实现的排队，我们还可以认为的让所有的操作排队，比如依次只处理一个对账户的写
+   操作。怎么实现呢？让所有对同一个账户的操作都放到一个队列里面，只有一个消费者线程从队列里取操作去处理账户金额，这样也
+   实现了对同一个账户操作的排队。java里常用的锁，比如有synchronized关键字，JUC的Lock实现等。
+
+   还有一种实现方式是什么呢？就是利用数据库提供的行级锁，为每行账户记录加一个版本号，业务线程操作账户金额时，必须带着之
+   前查出来的版本号，那线程内部版本号和数据库存的版本号进行对比，相同的才能更新账户数据，否则就失败。这也实现了对账户操
+   作的排队。这种方式其实就是不保留历史记录的MVCC方式。
+
+   以上三种方式都通过自己的方式实现里对账户操作的排队，保证了不同业务线程对共享的账户金额的安全操作。前面提到的商品数量
+   问题也可以通过这三种排队方式去实现数据安全。我们可以大胆的推理，所有的共享资源，都可以通过这三种排队方式实现安全。
+
+   举的这个例子都是写操作，其实还有独立的读操作，比如商品数量问题，不同用户浏览商品的时候，都是对商品数量的读操作，这种
+   读操作其实是不互斥的，只有发生写操作的时候，才需要互斥。也就是说资源状态中，被占用又可以分为两种状态，被写占用还是读
+   占用，写占用的时候其他任何读写线程都不能操作，读占用的时候其他读线程可以操作，但写线程会被阻塞。java里的读写锁，就实
+   现了对这种场景的抽象。读写锁抽象里共享资源的三个状态，实现里对共享资源操作的排队，保证里共享资源的安全。
+** Java如何使用不共享内存模型解决线程安全问题
+   除去上面的排队模型，还有什么方式可以解决争用呢？可以让业务线程不争用啊，大家不共享了，自然就不争用了。比如java中常见
+   的SimpleDateFormat对象如果给多个线程同时使用就会出现格式化的日期不对的情况。为啥不对呢，因为SDF对象的属性被多个线程争
+   用，导致了多个线程使用的时候资源状态混乱，数据错乱。从不共享的角度怎么解决问题呢？那就为每一个线程分配一个SDF对象，这
+   样线程之间就不会争用一个SDF对象了，没有了争用，资源就安全了，代码执行就正常了。java中常用的实现方式有两种，一种是每次
+   使用的时候new一个SDF对象出来，另一种方式是利用java提供的ThreadLocal对象。
+*** ThreadLocal
+    ThreadLocal在java中叫做线程封闭。什么意思呢，就是把对象封闭到使用的线程中，不给其他线程用，进而不发生争用，保证线程
+    安全。怎么实现的呢，大概的模型就是利用一个map对象，key是线程，值是业务对象。每次是通过线程当key获取value的，自然不会
+    重复。
+** Java如果使用不可变资源模型解决线程安全问题
+   不可变模型相当于是不争用的一个特例。不可变意味着可以任意复制多份到任意线程中，不会争用。可是如果要修改对象的数据怎么
+   办呢？这个时候就要通过copyOnWrite实现了。copyOnWrite不会修改原对象的数据，而是会原子的复制原对象的数据， 并把新的数据
+   写到新对象里面，然后返回一个新对象。java通过final关键字实现不可变对象。
+*** Final关键字
+    final修饰类标明类不可被继承，final修饰的变量只能被赋值一次不能修改。利用final关键字，我们如何构造一个不可变对象呢？
+    
+    1. 将类声明为final，所以它不能被继承
+    2. 将所有的成员声明为私有的，这样就不允许直接访问这些成员
+    3. 对变量不要提供setter方法
+    4. 将所有可变的成员声明为final，这样只能对它们赋值一次
+    5. 通过构造器初始化所有成员，进行深拷贝(deep copy)
+    6. 在getter方法中，不要直接返回对象本身，而是克隆对象，并返回对象的拷贝
+    
+    String类就是不可变数据的一个典型例子。String对象可以安全的被任意线程使用，切不需要加锁开销。
+
+** Java如何使用排队模型解决线程安全问题
+*** synchronized的用法
+    sync的基本用法是 sync(obj){code...}，含义是什么呢？obj对象相当于资源争用模型里面用来标明资源状态的互斥量，code是对共
+    享资源的操作。通过sync包裹code，可以实现code对应的操作在obj这个对象上排队。而code内部操作的可能是多个业务对象，这些
+    业务对象别抽象成一个资源，然后通过obj来标识资源被占用的状态。
+
+    当sync修饰对象方法的时候，形如 public sync void method() 这种，sync默认会把this指向的对象作为互斥量，那么对同一个对
+    象方法的访问，会在这个对象上排队；操作不同对象的线程不会互斥。当sync修饰的是静态方法的时候，会把所在类的class对象作为互斥量，所有访问该方法的线
+    程会在这个类对象上排队，因为一般一个类对象在jvm中只有一份，所以所有调用该方法的线程会互斥。
+
+    所以我们要有这一一个理解，sync锁的是对象，sync包裹的代码会在被锁的对象上排队。
+*** Java对象头
+    sync锁的对象是怎么实现互斥量功能的呢？HotSpot虚拟机中，对象在内存中的布局分为三个区域，对象头、实例数据和对齐填充。
+    对象头包含两部分，Mark Word和类型指针。其中类型指针指向对象的类，虚拟机通过这个指针确定对象是属于哪个类的。Mark Word
+    是一个32位的对象，用于存储对象运行时数据，包括hashcode，GC年龄分代，锁状态标识，线程持有的锁，偏向线程ID，偏向时间戳
+    等信息。那么在短短的32位内存里，是怎么存储这么多信息的呢？是不同的锁状态会存储不同的数据。
+
+    | 锁状态   | 存储内容             | 偏向锁标志位 | 锁标志位 |
+    |----------+----------------------+--------------+----------|
+    |          |                      |              |          |
+    | 无锁     | hashcode(25bits)和gc分代年龄(4bits) | 0            |       01 |
+    | 轻量级锁 | 指向栈中锁记录的指针 | 无           |       00 |
+    | 重量级锁 | 指向互斥量的指针     | 无           |       10 |
+    | 偏向锁   | 线程ID(23bits)，时间戳(2bits)和分代年龄(4bits) | 1            |       01 |
+    | GC标记   | 无                       | 无           | 11       | 
+    Mark Word对象提供了大量对状态的查询和更新操作，为sync的实现提供了基础。
+    锁共有四种状态，无锁、偏向锁、轻量级锁和重量级锁。随着锁的竞争，会从偏向锁升级到轻量级锁，再升级到重量级锁。锁只会升
+    级而不会降级。
+
+**** 轻量级锁获取过程
+     1. 在代码进入同步块的时候，如果同步对象锁状态为无锁状态（锁标志位为“01”状态，是否为偏向锁为“0”），虚拟机首先将
+        在当前线程的栈帧中建立一个名为锁记录（Lock Record）的空间，用于存储锁对象目前的Mark Word的拷贝，官方称之为
+        Displaced Mark Word。
+     2. 拷贝对象头中的Mark Word复制到锁记录中。
+     3. 拷贝成功后，虚拟机将使用CAS操作尝试将对象的Mark Word更新为指向Lock Record的指针，并将Lock record里的owner指针指
+        向object mark word。如果更新成功，则执行步骤4，否则执行步骤5。
+     4. 如果这个更新动作成功了，那么这个线程就拥有了该对象的锁，并且对象Mark Word的锁标志位设置为“00”，即表示此对象处
+        于轻量级锁定状态
+     5. 如果这个更新操作失败了，虚拟机首先会检查对象的Mark Word是否指向当前线程的栈帧，如果是就说明当前线程已经拥有了这
+        个对象的锁，那就可以直接进入同步块继续执行。否则说明多个线程竞争锁，轻量级锁就要膨胀为重量级锁，锁标志的状态值变
+        为“10”，Mark Word中存储的就是指向重量级锁（互斥量）的指针，后面等待锁的线程也要进入阻塞状态。 而当前线程便尝试
+        使用自旋来获取锁，自旋就是为了不让线程阻塞，而采用循环去获取锁的过程。
+
+     从轻量级锁的获取过程，我们也可以看出来，所有锁的设计都是基于抽象状态+对抽象状态的原子操作来实现的。java提供的
+        sync是这样实现的。另一个JUC下面的锁也是这样实现的。
+
+*** AQS解读
+    SCHEDULED: <2017-09-28 四>
+    前面我们所讲的，都是一种感性的认知。比如我们说所有的争用操作都会中某个资源状态互斥量上排队，比如我们说sync保证了线程
+    安全，比如我们说ReadWriteLock实现了读写锁，这些都是感性的认知，我们会理解为这样就安全了。但这些到底是怎么实现呢？下
+    面我们以AQS为例子，详细说明设计一个锁到底要包含哪些东西，需要哪些支撑，实现哪些功能。
+
+    *一个锁的设计要考虑的包含如下几个方面：* \\
+
+        *1. 抽象资源状态的标志位* 
+
+	*2. 对标志位的原子复合操作* 
+
+	*3. 对争用者行为的控制，包括暂停和恢复* 
+
+	*4. 对争用者的暂存功能*
+
+    以上四个条件，就是设计一个锁的时候所要考虑的必要条件。将这四个全部实现，我们就可以设计出一个基本的锁来，然后再通过添
+    加一些其他的属性或操作，进而实现复杂一点的锁。这个复杂不是说分布式锁就复杂了，而是一些锁的其他特性，比如公平非公平，
+    排他还是共享。
+
+    AQS的全称叫AbstractQueuedSynchronizer，AQS就通过实现上面三个条件，进而提供了一个基础的锁的功能。AQS是怎么实现上面三
+    个条件的呢？这要从AQS的基本组成和操作讲起，首先AQS的基本组成包含三部分，一个int类型的state字段-作为抽象资源状态的标
+    志位；一个CHL队列，用来储存被暂停的线程-实现对争用者行为的暂存功能，方便恢复；还有一个就是系统提供的Unsafe对象，这个对象
+    主要提供了一种功能，就是对state字段原子复合操作，也就是我们常说的cas，比较成功并设置操作，这个操作由jvm层保证了原子
+    性。
+
+    AQS的组成满足了上面的条件1，2和4，那么条件3是怎么实现的呢？JUC使用了JVM提供的LockSupport类来实现3。顾名思义，
+    LockSupport就提供了锁的基本行为支撑，包括暂停争用者行为和恢复争用者行为。
+
+    下面我们通过分析JUC中ReentrantLock是怎么实现的，来看看怎么把这四个条件组合在一起就实现一个锁的。要分析一个代码为啥这
+    么写，要先分析这个代码提供了什么功能。那么ReentrantLock提供了什么功能呢，公平或者非公平的可重入锁。我们这里以公平的
+    可重入锁来分析功能。公平的意思是线程按先来后到的顺序依次获取、使用和释放锁。可重入的意思是同一个线程在获得锁之后，再
+    一次运行到获取锁的时候，不会被阻塞，释放的次数和获取的次数一样，才能释放掉锁。最后，它还实现了锁的功能。
+
+   *ReentrantLock有个内部类叫做FairSync，它是AQS的一个子类，我们来梳理一下lock过程：*
+****     尝试使用原子操作将抽象标志位（state）的值从0改变为1，这里0表示没有线程占用资源，1表示线程独占资源。
+
+       1). 获取state值，判断是0的话表明锁未被占用，然后利用UnSafe提供的cas操作尝试将state的值设置为1如果设置成功则说明当
+          前线程持有了锁。将锁的拥有者设为当前线程，返回成功标志
+
+       2). 如果state的值不是0，说明锁已经被一个线程持有了，然后判断锁的持有者是不是当前线程，如果是的话将state的值加一，
+          实现了线程重入次数的记录，后面释放锁的时候对于重入的线程，重入了几次就要做几次减一操作。返回成功标志
+#+begin_src java
+/**
+ * 获取公平锁的方法
+  * 1）获取锁数量c
+  * 1.1)如果c==0，如果当前线程是等待队列中的头节点，使用CAS将state（锁数量）从0设置为1，如果设置成功，当前线程独占锁-->请求成功
+  * 1.2)如果c!=0，判断当前的线程是不是就是当下独占锁的线程，如果是，就将当前的锁数量状态值+1（这也就是可重入锁的名称的来源）-->请求成功
+  * 最后，请求失败后，将当前线程链入队尾并挂起，之后等待被唤醒。
+  */
+ protected final boolean tryAcquire(int acquires) {
+     final Thread current = Thread.currentThread();
+     int c = getState();
+     if (c == 0) {
+         if (isFirst(current) && compareAndSetState(0, acquires)) {
+             setExclusiveOwnerThread(current);
+             return true;
+         }
+     }
+     else if (current == getExclusiveOwnerThread()) {
+         int nextc = c + acquires;
+         if (nextc < 0)
+             throw new Error("Maximum lock count exceeded");
+         setState(nextc);
+         return true;
+     }
+     return false;
+ }
+#+end_src
+****    如果第一步尝试失败，会把当前线程放到CHL队列的尾部（公平锁与非公平锁的区别就在这里），放入尾部的这个操作实际上也是
+       对CHL队列尾部资源的争用，这里是也是通过cas操作去实现的
+
+       1). 创建一个新的CHL节点，存放当前线程；通过一次cas操作实现fast-try，就是快速尝试将节点放入到CHL队列尾部
+#+begin_src java
+/**
+ * 将Node节点加入等待队列
+ * 1）快速入队，入队成功的话，返回node
+ * 2）入队失败的话，使用正常入队
+ * 注意：快速入队与正常入队相比，可以发现，正常入队仅仅比快速入队多而一个判断队列是否为空且为空之后的过程
+ * @return 返回当前要插入的这个节点，注意不是前一个节点
+ */
+private Node addWaiter(Node mode) {
+   Node node = new Node(Thread.currentThread(), mode);//创建节点
+  /*
+   * 快速入队
+   */
+  Node pred = tail;//将尾节点赋给pred
+  if (pred != null) {//尾节点不为空
+      node.prev = pred;//将尾节点作为创造出来的节点的前一个节点，即将node链接到为节点后
+      /**
+       * 基于CAS将node设置为尾节点，如果设置失败，说明在当前线程获取尾节点到现在这段过程中已经有其他线程将尾节点给替换过了
+       * 注意：假设有链表node1-->node2-->pred（当然是双链表，这里画成双链表才合适）,
+       * 通过CAS将pred替换成了node节点，即当下的链表为node1-->node2-->node,
+       * 然后根据上边的"node.prev = pred"与下边的"pred.next = node"将pred插入到双链表中去，组成最终的链表如下：
+       * node1-->node2-->pred-->node
+       * 这样的话，实际上我们发现没有指定node2.next=pred与pred.prev=node2，这是为什么呢？
+       * 因为在之前这两句就早就执行好了，即node2.next和pred.prev这连个属性之前就设置好了
+       */
+      if (compareAndSetTail(pred, node)) {
+          pred.next = node;//将node放在尾节点上
+          return node;
+      }
+  }
+  enq(node);//正常入队
+  return node;
+}
+#+end_src
+       2). 如果fast-try失败，就通过for(;;)循环尝试将节点加入到队列尾部去
+#+begin_src java
+/**
+ * 正常入队
+ * @param node
+ * @return 之前的尾节点
+ */
+private Node enq(final Node node) {
+    for (;;) {//无限循环，一定要阻塞到入队成功为止
+        Node t = tail;//获取尾节点
+        if (t == null) { //如果尾节点为null，说明当前等待队列为空
+            /*Node h = new Node(); // Dummy header
+            h.next = node;
+            node.prev = h;
+            if (compareAndSetHead(h)) {//根据代码实际上是：compareAndSetHead(null,h)
+                tail = node;
+                return h;
+            }*/
+            /*
+             * 注意：上边注释掉的这一段代码是jdk1.6.45中的，在后来的版本中，这一段改成了如下这段
+             * 基于CAS将新节点（一个dummy节点）设置到头上head去，如果发现内存中的当前值不是null，则说明，在这个过程中，已经有其他线程设置过了。
+             * 当成功的将这个dummy节点设置到head节点上去时，我们又将这个head节点设置给了tail节点，即head与tail都是当前这个dummy节点，
+             * 之后有新节点入队的话，就插入到该dummy之后
+             */
+            if (compareAndSetHead(new Node()))
+                tail = head;
+        } else {//这一块儿的逻辑与快速入队完全相同
+            node.prev = t;
+            if (compareAndSetTail(t, node)) {//尝试将node节点设为尾节点
+                t.next = node;//将node节点设为尾节点
+                return t;
+            }
+        }
+    }
+}
+#+end_src
+       3). 入队成功后，有可能前面的节点的线程已经成功释放锁了，这时候刚刚入队的节点就会成为头节点，然后再执行步骤1去尝试
+          获取锁，成功则返回
+#+begin_src java
+final boolean acquireQueued(final Node node, int arg) {
+    try {
+        boolean interrupted = false;
+        /*
+         * 无限循环（一直阻塞），直到node的前驱节点p之前的所有节点都执行完毕，p成为了head且node请求成功了
+         */
+        for (;;) {
+            final Node p = node.predecessor();//获取插入节点的前一个节点p
+            /*
+             * 注意：
+             * 1、这个是跳出循环的唯一条件，除非抛异常
+             * 2、如果p == head && tryAcquire(arg)第一次循环就成功了，interrupted为false，不需要中断自己
+             *         如果p == head && tryAcquire(arg)第一次以后的循环中如果执行了挂起操作后才成功了，interrupted为true，就要中断自己了
+             */
+            if (p == head && tryAcquire(arg)) {
+                setHead(node);//当前节点设置为头节点
+                p.next = null; 
+                return interrupted;//跳出循环
+            }
+            if (shouldParkAfterFailedAcquire(p, node) && parkAndCheckInterrupt())
+                interrupted = true;//被中断了
+        }
+    } catch (RuntimeException ex) {
+        cancelAcquire(node);
+        throw ex;
+    }
+}
+#+end_src
+       4). 如果当前节点不是头节点，说明前面节点的线程还没有释放锁，那么就要通过判断当前节点的前一个节点的状态，来决定当
+       前节点能不能被阻塞，如果可以利用LockSupport的功能将当前线程阻塞住;否则就把前面节点中，被取消的节点删除掉
+#+begin_src java
+/**
+ * 检测当前节点是否可以被安全的挂起（阻塞）
+ * @param pred    当前节点的前驱节点
+ * @param node    当前节点
+ */
+private static boolean shouldParkAfterFailedAcquire(Node pred, Node node) {
+    int ws = pred.waitStatus;//获取前驱节点（即当前线程的前一个节点）的等待状态
+    if (ws == Node.SIGNAL)//如果前驱节点的等待状态是SIGNAL，表示当前节点将来可以被唤醒，那么当前节点就可以安全的挂起了
+        return true;
+    /*
+     * 1）当ws>0(即CANCELLED==1），前驱节点的线程被取消了，我们会将该节点之前的连续几个被取消的前驱节点从队列中剔除，返回false（即不能挂起）
+     * 2）如果ws<=0&&!=SIGNAL,将当前节点的前驱节点的等待状态设为SIGNAL
+     */
+    if (ws > 0) {
+        do {
+            /*
+             * node.prev = pred = pred.prev;
+             * 上边这句代码相当于下边这两句
+             * pred = pred.prev;
+             * node.prev = pred;
+             */
+            node.prev = pred = pred.prev;
+        } while (pred.waitStatus > 0);
+        pred.next = node;
+    } else {
+        /*
+         * 尝试将当前节点的前驱节点的等待状态设为SIGNAL
+         * 1/这为什么用CAS，现在已经入队成功了，前驱节点就是pred，除了node外应该没有别的线程在操作这个节点了，那为什么还要用CAS？而不直接赋值呢？
+         * （解释：因为pred可以自己将自己的状态改为cancel，也就是pred的状态可能同时会有两条线程（pred和node）去操作）
+         * 2/既然前驱节点已经设为SIGNAL了，为什么最后还要返回false
+         * （因为CAS可能会失败，这里不管失败与否，都返回false，下一次执行该方法的之后，pred的等待状态就是SIGNAL了）
+         */
+        compareAndSetWaitStatus(pred, ws, Node.SIGNAL);
+    }
+    return false;
+}
+#+end_src
+利用LockSupport实现对线程的暂停操作
+#+begin_src java
+private final boolean parkAndCheckInterrupt() {
+    LockSupport.park(this);//挂起当前的线程
+    return Thread.interrupted();//如果当前线程已经被中断了，返回true
+}
+#+end_src
+
+    *讲完加锁操作，我们再来看一下解锁是怎么实现的：*
+
+    1) 其实释放锁的操作就比较简单了，首先判断释放锁的线程是否是持有锁的线程，不是则抛出异常。
+    2) 判断释放锁之后，资源状态是不是空闲状态，如果是将锁持有者设置成空，标明没有被占用。并且将CLH队列里，后续节点中第一
+       个有效的节点唤醒
+    3) 将计算出的资源状态值设置到资源状态标志位
+
+设置资源状态的代码：
+#+begin_src java
+protected final boolean tryRelease(int releases) {
+    int c = getState() - releases;
+    if (Thread.currentThread() != getExclusiveOwnerThread())
+        throw new IllegalMonitorStateException();
+    boolean free = false;
+    if (c == 0) {
+        free = true;
+        setExclusiveOwnerThread(null);
+    }
+    setState(c);
+    return free;
+}
+#+end_src
+
+唤醒后续节点的代码：
+#+begin_src java
+private void unparkSuccessor(Node node) {
+    /*
+     * If status is negative (i.e., possibly needing signal) try
+     * to clear in anticipation of signalling. It is OK if this
+     * fails or if status is changed by waiting thread.
+     */
+    int ws = node.waitStatus;
+    if (ws < 0)
+        compareAndSetWaitStatus(node, ws, 0); 
+
+    /*
+     * Thread to unpark is held in successor, which is normally
+     * just the next node.  But if cancelled or apparently null,
+     * traverse backwards from tail to find the actual
+     * non-cancelled successor.
+     */
+    Node s = node.next;
+    if (s == null || s.waitStatus > 0) {
+        s = null;
+        for (Node t = tail; t != null && t != node; t = t.prev)
+            if (t.waitStatus <= 0)
+                s = t;
+    }
+    if (s != null)
+        LockSupport.unpark(s.thread);
+}
+#+end_src
+
+    LockSupport+cas+state+CHL队列构成了Java实现锁的四个基本要素。在其他的系统中，我们想要构建一个锁的时候，也要从这四方
+    面考虑，只要满足了这四个条件，就可以去构建自己想要实现的锁。
+*** 读写分离
+    可重入读写锁的特性就是读读不互斥，读写、写写操作是互斥的。那么跟可重入锁的区别就是纯读操作的时候，是不用排队的。再细
+    化下去就是，资源状态不是简单的分为占用和空闲，而是分为排他占用、共享占用和空闲。对资源的操作也分为排他操作和共享操作。
+    其中排他操作操作资源的时候要将资源状态设置为排他占用，不允许其他操作类型的操作进入。而共享操作读取资源的时候，资源设
+    置为共享占用，允许其他共享操作获取锁，但不允许排他操作获取锁。具体的实现可以参考ReentrantReadWriteLock，就不详细解说
+    了。
+*** CountDownLatch
+    它的主要功能是实现等待其他任务完成后，再继续执行当前任务。比如一个大量计算任务，要分解成几个子任务，然
+    后主任务要等子任务结束之后继续运行，这种场景就可以用CountDownLatch了。主线程构造一个CountDownLatch，state设置为子任
+    务的数量，子任务线程在执行结束的时候，会把state字段原子的减一。主任务线程会阻塞在CountDownLatch的await方法上。等子任
+    务线程把state字段修改为0的时候，标识所有子任务结束，然后会唤醒之前暂停的主任务线程。
+
+    下面通过代码分析一下过程：
+    
+    主任务等待：
+
+#+begin_src java
+// 主线程等待代码
+public final void acquireSharedInterruptibly(int arg) throws InterruptedException {
+    if (Thread.interrupted())
+        throw new InterruptedException();
+    if (tryAcquireShared(arg) < 0)
+        doAcquireSharedInterruptibly(arg);
+}
+// 判断状态是否为0，也就是子任务有没有结束，没有结束就执行AQS方法，加入等待队列中
+public int tryAcquireShared(int acquires) {
+    return getState() == 0? 1 : -1;
+}
+#+end_src
+
+    子任务修改state：
+
+#+begin_src java
+// 先将状态值减一，然后判断状态值是否是0，如果是0说明子任务还行完成，调用AQS的doReleaseShared方法，唤醒在state上等待的主任务
+public final boolean releaseShared(int arg) {
+    if (tryReleaseShared(arg)) {
+        doReleaseShared();
+        return true;
+    }
+    return false;
+}
+#+end_src
+
+*** Semaphore
+    Semaphore中文被翻译成信号量。它提供了这样的功能，它的state字段作为对资源可同时操作的争用线程数量许可的抽象，通过利用底层提
+    供的cas操作，保证了一个争用线程只能拿到一个许可，对于没有许可的时候，争用线程需要等待已经拿到争用许可的线程释放许可
+    后，再去获取许可。
+
+    代码分析就不贴了，我们感性的分析一下实现过程。state字段用来表明资源被占用的状态，state初始化为几则表明资源可以被几个争用线程同时使用。
+    线程获取许可的时候，调用acquire方法，还是老套路先利用cas操作尝试将state字段的值减一，表明当前线程想占用一个许可；获
+    取成功则继续执行，获取失败则加入到CLH队列中，利用LockSupport将线程暂停执行。当已经获取许可的线程执行完成后，尝试释放
+    一个许可，也就是把state字段的值加一。释放成功后，将CLH队列中等待许可的线程唤醒，让线程去尝试获取许可。
+
+    Semaphore提供了对允许多个争用者同时占用资源这种场景的抽象，正符合我们经常见到的线程池、连接池等场景，也可以用来做限
+    流使用。
+*** FutureTask
+    FutureTask（简写FT）提供了这样一个功能，当我们启用一个线程去做计算的时候，一般是不知道什么时候完成计算，也无法获取返回结果的。
+    但FT+Callable（后面简称FC）却可以在计算完成后获取返回结果。FC是怎么利用资源争用模型实现功能的呢？
+
+    我们首先分析要解决的问题有哪些。一是要知道启用的线程什么时候完成计算，二是从哪里得到计算结果。既然主线程无法主动在完
+    成计算后获取计算结果，我们可以反过来思考，让主线程主动等待，当计算线程完成计算后，将计算结果设置到主线程持有的
+    FT中，并且唤醒等待的主线程。
+
+    那么，这个场景就很符合我们之前说的锁的模型了：线程需要被暂停和暂存，并且能被恢复；主线程和计算线程争用共享的
+    FT这一资源；通过state字段表明FT有没有被设置计算结果的状态。
+
+    我们来感性的理解一下FC的实现过程，首先我们新建一个Callable对象，里面存放要获取计算结果的计算过程，然后我们通过
+    AbstractExecutorService提供的submit方法，新建一个FT对象，FT持有Callable对象，FT本身也实现了runnable接口，中FT的run方
+    法中，执行Callable对象的call方法，获取返回结果，将结果设置到FT的outcome对象上，然后设置state的状态是已完成，并且将等
+    待的线程唤醒。这是计算线程的执行过程。主线程是通过get方法获取计算结果的，跟其他工具一样，get的时候也是先判断state的
+    状态，如果是未完成，则将线程暂停并放入的CLH队列中等待FT执行完成后将其唤醒。
+* Java线程管理
+  通过前面对线程的介绍，我们可以了解到，线程和进程一样，也是对系统资源的一种抽象，只是线程占有的资源要少一点。既然是系统
+  资源，那么就受限于系统配置，不可能无限多的创建。对于这种受限的，且创建和销毁都比较耗时耗力的资源，我们就应该利用资源池
+  的思想将其池化，以达到更高效的管理和使用的目的。jdk就为线程的管理提供了一套线程池工具。核心就是ThreadPoolExecutor这个
+  类。
+** ThreadPoolExecutor解读
+   TPE要实现线程资源池化管理的功能，其结构设计是这样的：一个核心线程数大小，一个最大线程数大小，一个空闲线程等待时长，一
+   个任务暂存队列，一个产生线程的工厂和一个任务拒绝测略。TPE的构造方法也是完成这几个参数的设置。下面我们做一下详细说明。
+*** 参数说明
+    1. corePoolSize：核心线程数大小，也就是TPE中常驻的线程数量
+    2. maximumPoolSize：最大线程数大小，新增任务的时候，如果实际工作的线程数量大于core的数量，就会尝试继续创建新线程来执
+       行任务，但实际工作线程的数量不能超过max，并且小于max且大于core的线程会按照设置的空闲等待时长销毁
+    3. keepAliveTime：空闲等待时长
+    4. unit：空闲等待时长单位，两个结合组成了实际空闲等待时长
+    5. workQueue：暂存任务的任务队列，当实际工作线程数大于core，并且TPE处于运行状态时，新增的任务就会尝试加入到任务队列
+       中去
+    6. handler：拒绝测略，当实际任务数大于max或者虽然加入任务队列成功但TPE已经被关闭的时候，提交的任务就会执行拒绝策略
+*** 核心方法解读
+    代码1：
+#+begin_src java
+public void execute(Runnable command) {
+        if (command == null)
+            throw new NullPointerException();
+        /*
+         * Proceed in 3 steps:
+         *
+         * 1. If fewer than corePoolSize threads are running, try to
+         * start a new thread with the given command as its first
+         * task.  The call to addWorker atomically checks runState and
+         * workerCount, and so prevents false alarms that would add
+         * threads when it shouldn't, by returning false.
+         *
+         * 2. If a task can be successfully queued, then we still need
+         * to double-check whether we should have added a thread
+         * (because existing ones died since last checking) or that
+         * the pool shut down since entry into this method. So we
+         * recheck state and if necessary roll back the enqueuing if
+         * stopped, or start a new thread if there are none.
+         *
+         * 3. If we cannot queue task, then we try to add a new
+         * thread.  If it fails, we know we are shut down or saturated
+         * and so reject the task.
+         */
+        int c = ctl.get();\\ 线程池状态，内含核心线程数
+        if (workerCountOf(c) < corePoolSize) {\\ 判断实际工作线程数是否小于核心线程数
+            if (addWorker(command, true)) \\ 如果小于则新建线程执行任务
+                return;
+            c = ctl.get();\\ 否则重新获取线程池状态
+        }
+        if (isRunning(c) && workQueue.offer(command)) {\\ 判断线程池处于正常工作状态，然后尝试将任务加入任务队列，具体offer方法有哪些特性，就决定了TPE的特性
+            int recheck = ctl.get();\\ 加入任务队列可能是一个阻塞操作，所以加入成功后重新获取以判断状态
+            if (! isRunning(recheck) && remove(command))\\ 如果TPE处于关闭状态，并且把刚刚加入队列的任务成功移除，并执行拒绝策略
+                reject(command);
+            else if (workerCountOf(recheck) == 0)\\否则，判断如果实际工作线程为0的话，就创建新的线程去处理队列中遗留的任务
+                addWorker(null, false);
+        }
+        else if (!addWorker(command, false))\\如果TPE已经关闭，或者放入任务队列失败，会尝试新增线程完成任务
+            reject(command);\\ 尝试失败就执行拒绝策略
+    }
+#+end_src
+代码2：它的功能是尝试新增线程执行任务。core为真的时候，判断工作线程数是否大于核心线程数；否则判断是否大于最大线程数。校
+验通过后会新建一个Worker对象，包含任务和执行任务的线程，线程通过前面设置的线程工厂创建。然后获取TPE的锁，将worker对象加
+入的TPE的worker集合中，如果加入成功就启动线程执行任务；如果加入成功但启动失败，就将worker从集合中移除。
+#+begin_src java
+    private boolean addWorker(Runnable firstTask, boolean core) {
+        retry:
+        for (;;) {
+            int c = ctl.get();
+            int rs = runStateOf(c);
+
+            // Check if queue empty only if necessary.
+            if (rs >= SHUTDOWN &&
+                ! (rs == SHUTDOWN &&
+                   firstTask == null &&
+                   ! workQueue.isEmpty()))
+                return false;
+
+            for (;;) {
+                int wc = workerCountOf(c);
+                if (wc >= CAPACITY ||
+                    wc >= (core ? corePoolSize : maximumPoolSize))
+                    return false;
+                if (compareAndIncrementWorkerCount(c))
+                    break retry;
+                c = ctl.get();  // Re-read ctl
+                if (runStateOf(c) != rs)
+                    continue retry;
+                // else CAS failed due to workerCount change; retry inner loop
+            }
+        }
+
+        boolean workerStarted = false;
+        boolean workerAdded = false;
+        Worker w = null;
+        try {
+            w = new Worker(firstTask);
+            final Thread t = w.thread;
+            if (t != null) {
+                final ReentrantLock mainLock = this.mainLock;
+                mainLock.lock();
+                try {
+                    // Recheck while holding lock.
+                    // Back out on ThreadFactory failure or if
+                    // shut down before lock acquired.
+                    int rs = runStateOf(ctl.get());
+
+                    if (rs < SHUTDOWN ||
+                        (rs == SHUTDOWN && firstTask == null)) {
+                        if (t.isAlive()) // precheck that t is startable
+                            throw new IllegalThreadStateException();
+                        workers.add(w);
+                        int s = workers.size();
+                        if (s > largestPoolSize)
+                            largestPoolSize = s;
+                        workerAdded = true;
+                    }
+                } finally {
+                    mainLock.unlock();
+                }
+                if (workerAdded) {
+                    t.start();
+                    workerStarted = true;
+                }
+            }
+        } finally {
+            if (! workerStarted)
+                addWorkerFailed(w);
+        }
+        return workerStarted;
+    }
+#+end_src
+* 分布式系统中的资源争用
+  在分布式系统中，更涉及到资源争用的问题。适当抽象之后，也符合资源争用模型。分布式系统中所涉及的一致性问题，也可以通过与
+  java中类似的方案去解决，比如增加资源，比如排队模型。
+  
+  分布式系统中，锁的构建也符合之前所说的4个条件。比如我们利用redis提供的原子操作，用一个特定的key抽象要共享的资源，然后
+  用key对应的值来抽象资源状态，实现多机对同一资源的安全使用。我们使用zookeeper来保证分布式系统的一致性的时候，也是利用了
+  zookeeper提供的原子操作来实现分布式锁或者排队操作的。
+  
+  redis的server端，对所有的操作，不区分读写，都是按到达顺序一个一个处理的。zookeeper是将读写分离，选定一台机器做master，所有的写
+  操作，都由master完成；读操作都从slave机器读数据。
+
+  累了，不详细讲了。
+* 学习路线图
+| 阶段     | 主要书籍                                                  | 核心知识点                                                                 |
+|----------+-----------------------------------------------------------+----------------------------------------------------------------------------|
+| 第一阶段 | 《七周七并发模型》、《Java多线程编程实战指南 设计模式篇》 | 主要讲解资源争用模型，有哪些保证资源安全的模型                             |
+| 第二阶段 | 《java线程第三版》                                        | Java中线程的概念，实现；线程池是使用                                       |
+| 第三阶段 | 《Java并发编程实战》、《java并发编程艺术》等书籍          | 了解Java有哪些实现线程安全的方式，JUC怎么使用，适用什么场景等              |
+| 第四阶段 | 《深入理解java内存模型》、《JSR133》                      | 了解java是如何套用资源争用模型的，Java里面的东西怎么跟资源争用模型一一对应 |
+| 第五阶段 | 《Java并发编程：设计原则与模式(第二版)》                    | 跟随Doug Lea学习如何设计锁                                                          | 
+  
