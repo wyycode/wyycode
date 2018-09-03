@@ -1,0 +1,275 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+"http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en">
+<head>
+<title>深入浅出Java8 Lambda</title>
+<!-- 2017-11-05 Sun 08:57 -->
+<meta  http-equiv="Content-Type" content="text/html;charset=utf-8" />
+<meta  name="generator" content="Org-mode" />
+<meta  name="author" content="wangyueyang" />
+<meta  name="description" content="深入浅出的讲解Java8的lambda特性"
+ />
+<meta  name="keywords" content="lambda Java8 函数式编程" />
+<style type="text/css">
+ <!--/*--><![CDATA[/*><!--*/
+  .title  { text-align: center; }
+  .todo   { font-family: monospace; color: red; }
+  .done   { color: green; }
+  .tag    { background-color: #eee; font-family: monospace;
+            padding: 2px; font-size: 80%; font-weight: normal; }
+  .timestamp { color: #bebebe; }
+  .timestamp-kwd { color: #5f9ea0; }
+  .right  { margin-left: auto; margin-right: 0px;  text-align: right; }
+  .left   { margin-left: 0px;  margin-right: auto; text-align: left; }
+  .center { margin-left: auto; margin-right: auto; text-align: center; }
+  .underline { text-decoration: underline; }
+  #postamble p, #preamble p { font-size: 90%; margin: .2em; }
+  p.verse { margin-left: 3%; }
+  pre {
+    border: 1px solid #ccc;
+    box-shadow: 3px 3px 3px #eee;
+    padding: 8pt;
+    font-family: monospace;
+    overflow: auto;
+    margin: 1.2em;
+  }
+  pre.src {
+    position: relative;
+    overflow: visible;
+    padding-top: 1.2em;
+  }
+  pre.src:before {
+    display: none;
+    position: absolute;
+    background-color: white;
+    top: -10px;
+    right: 10px;
+    padding: 3px;
+    border: 1px solid black;
+  }
+  pre.src:hover:before { display: inline;}
+  pre.src-sh:before    { content: 'sh'; }
+  pre.src-bash:before  { content: 'sh'; }
+  pre.src-emacs-lisp:before { content: 'Emacs Lisp'; }
+  pre.src-R:before     { content: 'R'; }
+  pre.src-perl:before  { content: 'Perl'; }
+  pre.src-java:before  { content: 'Java'; }
+  pre.src-sql:before   { content: 'SQL'; }
+
+  table { border-collapse:collapse; }
+  caption.t-above { caption-side: top; }
+  caption.t-bottom { caption-side: bottom; }
+  td, th { vertical-align:top;  }
+  th.right  { text-align: center;  }
+  th.left   { text-align: center;   }
+  th.center { text-align: center; }
+  td.right  { text-align: right;  }
+  td.left   { text-align: left;   }
+  td.center { text-align: center; }
+  dt { font-weight: bold; }
+  .footpara:nth-child(2) { display: inline; }
+  .footpara { display: block; }
+  .footdef  { margin-bottom: 1em; }
+  .figure { padding: 1em; }
+  .figure p { text-align: center; }
+  .inlinetask {
+    padding: 10px;
+    border: 2px solid gray;
+    margin: 10px;
+    background: #ffffcc;
+  }
+  #org-div-home-and-up
+   { text-align: right; font-size: 70%; white-space: nowrap; }
+  textarea { overflow-x: auto; }
+  .linenr { font-size: smaller }
+  .code-highlighted { background-color: #ffff00; }
+  .org-info-js_info-navigation { border-style: none; }
+  #org-info-js_console-label
+    { font-size: 10px; font-weight: bold; white-space: nowrap; }
+  .org-info-js_search-highlight
+    { background-color: #ffff00; color: #000000; font-weight: bold; }
+  /*]]>*/-->
+</style>
+<link rel="stylesheet" type="text/css" href="./css/style.css" />
+<script type="text/javascript">
+/*
+@licstart  The following is the entire license notice for the
+JavaScript code in this tag.
+
+Copyright (C) 2012-2013 Free Software Foundation, Inc.
+
+The JavaScript code in this tag is free software: you can
+redistribute it and/or modify it under the terms of the GNU
+General Public License (GNU GPL) as published by the Free Software
+Foundation, either version 3 of the License, or (at your option)
+any later version.  The code is distributed WITHOUT ANY WARRANTY;
+without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE.  See the GNU GPL for more details.
+
+As additional permission under GNU GPL version 3 section 7, you
+may distribute non-source (e.g., minimized or compacted) forms of
+that code without the copy of the GNU GPL normally required by
+section 4, provided you include this license notice and a URL
+through which recipients can access the Corresponding Source.
+
+
+@licend  The above is the entire license notice
+for the JavaScript code in this tag.
+*/
+<!--/*--><![CDATA[/*><!--*/
+ function CodeHighlightOn(elem, id)
+ {
+   var target = document.getElementById(id);
+   if(null != target) {
+     elem.cacheClassElem = elem.className;
+     elem.cacheClassTarget = target.className;
+     target.className = "code-highlighted";
+     elem.className   = "code-highlighted";
+   }
+ }
+ function CodeHighlightOff(elem, id)
+ {
+   var target = document.getElementById(id);
+   if(elem.cacheClassElem)
+     elem.className = elem.cacheClassElem;
+   if(elem.cacheClassTarget)
+     target.className = elem.cacheClassTarget;
+ }
+/*]]>*///-->
+</script>
+</head>
+<body>
+<div id="content">
+<h1 class="title">深入浅出Java8 Lambda</h1>
+<div id="table-of-contents">
+<h2>Table of Contents</h2>
+<div id="text-table-of-contents">
+<ul>
+<li><a href="#sec-1">1. 让Java语言续命十年的lambda</a></li>
+<li><a href="#sec-2">2. lambda大法是什么</a></li>
+<li><a href="#sec-3">3. Java8中的lambda表达式</a></li>
+<li><a href="#sec-4">4. lambda为Java带来的革命性创新</a>
+<ul>
+<li><a href="#sec-4-1">4.1. 集合类抽象到Stream</a></li>
+<li><a href="#sec-4-2">4.2. 流式迭代、map和reduce</a></li>
+<li><a href="#sec-4-3">4.3. 流式并行</a></li>
+</ul>
+</li>
+<li><a href="#sec-5">5. 利用新特性改造旧代码</a></li>
+<li><a href="#sec-6">6. 总结</a></li>
+</ul>
+</div>
+</div>
+
+
+<div id="outline-container-sec-1" class="outline-2">
+<h2 id="sec-1"><span class="section-number-2">1</span> 让Java语言续命十年的lambda</h2>
+<div class="outline-text-2" id="text-1">
+<p>
+Java8的发布是在2014年的三月份，从上图我们可以看出Java8发布之后，Java语言的使用量加速上升。曾有大牛说过这样一句话，java8
+中lambda的引入，为Java语言延续了10年的寿命。这位大牛当然不是我了哈。下面我们就来看一下，lambda大法有什么样的魔力，可以让Java
+继续独占编程语言排行榜的首位。
+</p>
+</div>
+</div>
+<div id="outline-container-sec-2" class="outline-2">
+<h2 id="sec-2"><span class="section-number-2">2</span> lambda大法是什么</h2>
+<div class="outline-text-2" id="text-2">
+<p>
+我们都知道计算机科学界有一个大奖，叫图灵奖，拿这个奖的人都是计算机界的顶尖人物啊。图灵提出了一种抽象计算模型，简称图灵机，
+这个机器是后来计算机发展的理论基础。同学们要问了，这跟lambda有什么关系呢？且听我细讲，图灵的导师叫邱奇，在图灵发表他的可
+计算性理论《论可计算数及其在判定问题上的应用》之前，邱奇已经证明了这个问题。图灵关于可计算性理论理论的证明非常复杂，而邱
+奇却用十分简洁的方式做出了证明。这种方式就lambda演算。lambda演算使用到的语言就是lambda表达式。
+</p>
+
+
+<p>
+lambda表达式描述了一组对输入数据的处理逻辑，却没有为这个操作起名字。就像我们Java中常用的匿名内部类，虽然我们定义了类中的
+属性和操作，但我们也没有明确指明这个类叫什么。下面的讲解中，我们也会以匿名内部类这个大家熟悉的Java特性入手，讲解Java8中
+的lambda表达式。讲解之前Java的表达式之前，我们先来看一下伟大的邱奇定义的lambda表达式：形如lambda x,y.x+y 这样的式子就是
+了。这个式子包含三部分，lambda标识符；参数x和y；对参数的运算x+y。邱奇通过定义lambda表达式，以及lambda演算，定义了数字的
+0、1、2&#x2026;等自然数，然后又定义了逻辑真假，与或操作，定义了递归运算，通过这些定义完成了关于可计算性理论的推导。当然这是些
+课外知识，有兴趣的同学可以自主了解下。
+</p>
+
+<p>
+后人在lambda演算的理论基础上，发展出来了函数式编程语言，比如1958年发明的并且持续发展的lisp语言，比如前段时间火起来的
+haskell。这些语言都归为函数式编程语言，为啥呢？是因为其计算理论都来源于lambda演算，代码是思维方式都是基于函数式的。语言
+特性是函数式的。那么有哪些语言特性呢？
+</p>
+<ol class="org-ol">
+<li>将函数做为可传递的参数，这意味着函数可以调用函数，这个调用者，我们称之为高阶函数
+</li>
+<li>一切函数都有返回值，这意味着函数接受入参之后，经过函数处理不修改入参的原始内容，而是将修改结果返回回来。这就意味着，
+我们的函数可以被并行的调用而不需要考虑并发冲突问题。
+</li>
+<li>惰性求值，就是一个表达式哪怕已经给定了参数，也只会在需要的时候才进行计算
+</li>
+<li>闭包，同学们可以理解为一个封闭的上下文块
+</li>
+<li>声明式编程，我们现在在编写代码的时候，都是通过代码描述如何做一件事情。而声明式编程却是描述了我要做什么，具体怎么做是
+由底层库提供实现的
+</li>
+</ol>
+
+<p>
+有了这些特性以后，函数式编程表现出了非凡的生命力。首先函数式语言提供了更加丰满的语义，更深层次的抽象。这意味着我们的代码
+可以更加简洁，我们可以写更少的代码来实现相同的功能，在下面的利用新特性改造旧代码的环节中，我们会有更加直观的体验。其次，
+函数式语言的表达方式更贴近人类的思维方式，而不是机器的逻辑思维，这种代码在别人阅读的时候更容易理解。更重要的一点，由于函
+数式编程不修改数据，也就没有多线程模型中临界区间的问题，也就不用考虑线程安全问题，这样的代码可以由底层库自主选择使用任意
+多个cpu去执行，而不用担心并发，死锁等问题。
+</p>
+
+<p>
+    既然lambda表达式有这么多这么好的特性，那么Java中是怎么通过lambda表达式实现函数式编程，进而为广大javaer提供这些优秀的
+特性的呢？
+</p>
+</div>
+</div>
+<div id="outline-container-sec-3" class="outline-2">
+<h2 id="sec-3"><span class="section-number-2">3</span> Java8中的lambda表达式</h2>
+<div class="outline-text-2" id="text-3">
+<p>
+我们写代码都是为了解决实际场景中的问题，那么我们也通过一个真实的业务场景来讲解一下java中lambda表达式是怎么写的。场景就用
+我女朋友给她的学生阅卷并统计分数这个吧。我女票是语文老师前几天他们学校组织了一次期中考试，她负责改其中的一个大题就叫A题，
+这个题有18分呢，并且改完之后要统计分数。在这个业务场景中呢，我们有一组试卷的对象，每个试卷对象呢，我们要判断这个试卷中的
+A题是否正确，正确的在原来的分数基础上加上A题的18分，否则不用处理。同学们理解这个业务场景了吧，下面我们来通过代码描述一下。
+</p>
+
+<p>
+突然她同事打来电话说要出去旅游，没时间改试卷了，让我女票给帮她改B题。那么我们的业务逻辑中就增加了些东西。我们再将这些逻
+辑加入的代码的实现中。
+</p>
+</div>
+</div>
+
+<div id="outline-container-sec-4" class="outline-2">
+<h2 id="sec-4"><span class="section-number-2">4</span> lambda为Java带来的革命性创新</h2>
+<div class="outline-text-2" id="text-4">
+</div><div id="outline-container-sec-4-1" class="outline-3">
+<h3 id="sec-4-1"><span class="section-number-3">4.1</span> 集合类抽象到Stream</h3>
+</div>
+<div id="outline-container-sec-4-2" class="outline-3">
+<h3 id="sec-4-2"><span class="section-number-3">4.2</span> 流式迭代、map和reduce</h3>
+</div>
+<div id="outline-container-sec-4-3" class="outline-3">
+<h3 id="sec-4-3"><span class="section-number-3">4.3</span> 流式并行</h3>
+</div>
+</div>
+<div id="outline-container-sec-5" class="outline-2">
+<h2 id="sec-5"><span class="section-number-2">5</span> 利用新特性改造旧代码</h2>
+</div>
+<div id="outline-container-sec-6" class="outline-2">
+<h2 id="sec-6"><span class="section-number-2">6</span> 总结</h2>
+</div>
+</div>
+<div id="postamble" class="status">
+<p class="date">Date: <span class="timestamp-wrapper"><span class="timestamp">&lt;2017-10-30 Mon&gt;</span></span></p>
+<p class="author">Author: wangyueyang</p>
+<p class="date">Created: 2017-11-05 Sun 08:57</p>
+<p class="creator">Emacs 24.5.1 (Org mode 8.2.10)</p>
+<p class="validation"><a href="http://validator.w3.org/check?uri=referer">Validate</a></p>
+</div>
+</body>
+</html>

@@ -1,0 +1,6 @@
+#+AUTHOR:王月阳
+#+TITLE:链接资料
+
+1. [[http://lucida.me/blog/java-8-lambdas-insideout-language-feat][深入理解Java8lambda]]
+2. [[https://www.douban.com/note/176127340/][lambda演算实例]]
+3. [[http://cgnail.github.io/academic/lambda-1/][lambda系列文章]]
